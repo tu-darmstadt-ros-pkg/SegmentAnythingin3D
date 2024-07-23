@@ -1,4 +1,4 @@
-# Copyright 2022 The Nerfstudio Team. All rights reserved.
+# Copyright 2022 The Nerfstudio Team. All rights reserved.w
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -75,14 +75,18 @@ class SA3DModel(NerfactoModel):
         return param_groups
 
     def get_outputs(self, ray_bundle: RayBundle):
+        if self.training:
+            self.camera_optimizer.apply_to_raybundle(ray_bundle)
         with torch.no_grad():
             ray_samples, weights_list, ray_samples_list = self.proposal_sampler(ray_bundle, density_fns=self.density_fns)
-            field_outputs = self.field(ray_samples, compute_normals=self.config.predict_normals)
+
+            field_outputs = self.field.forward(ray_samples, compute_normals=self.config.predict_normals)
             weights = ray_samples.get_weights(field_outputs[FieldHeadNames.DENSITY])
             weights_list.append(weights)
             ray_samples_list.append(ray_samples)
 
             rgb = self.renderer_rgb(rgb=field_outputs[FieldHeadNames.RGB], weights=weights)
+            # import pdb;pdb.set_trace()
             depth = self.renderer_depth(weights=weights, ray_samples=ray_samples)
             accumulation = self.renderer_accumulation(weights=weights)
 
@@ -116,6 +120,7 @@ class SA3DModel(NerfactoModel):
         Args:
             camera_ray_bundle: ray bundle to calculate outputs over
         """
+        # self.camera_optimizer.apply_to_raybundle(camera_ray_bundle)
         num_rays_per_chunk = self.config.eval_num_rays_per_chunk
         image_height, image_width = camera_ray_bundle.origins.shape[:2]
         num_rays = len(camera_ray_bundle)
@@ -132,6 +137,7 @@ class SA3DModel(NerfactoModel):
             if not torch.is_tensor(outputs_list[0]):
                 # TODO: handle lists of tensors as well
                 continue
+
             outputs[output_name] = torch.cat(outputs_list).view(image_height, image_width, -1)  # type: ignore
 
         if 'mask_scores' in outputs.keys():

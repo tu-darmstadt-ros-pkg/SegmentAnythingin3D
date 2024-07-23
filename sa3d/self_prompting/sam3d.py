@@ -16,9 +16,9 @@ CONSOLE = Console(width=120)
 from dataclasses import dataclass, field
 from typing import Type
 from nerfstudio.configs import base_config as cfg
-
-from segment_anything import (SamAutomaticMaskGenerator, SamPredictor,
-                              sam_model_registry)
+from mobile_sam import (sam_model_registry, SamAutomaticMaskGenerator, SamPredictor)
+# from segment_anything import (SamAutomaticMaskGenerator, SamPredictor,
+#                               sam_model_registry)
 from .utils import cal_IoU, to8b, to_tensor
 from .grounding_dino import GroundingDino
 
@@ -44,8 +44,10 @@ class SAM3D:
         self.stage = config.stage
         self.neg_lamda = config.neg_lamda
         self.iou_thresh = config.iou_thresh
-        sam_checkpoint = "sa3d/self_prompting/dependencies/sam_ckpt/sam_vit_h_4b8939.pth"
-        model_type = "vit_h"
+        # sam_checkpoint = "sa3d/self_prompting/dependencies/sam_ckpt/sam_vit_h_4b8939.pth"
+        sam_checkpoint = "sa3d/self_prompting/dependencies/sam_ckpt/mobile_sam.pt"
+        # model_type = "vit_h"
+        model_type = "vit_t"
         sam_model = sam_model_registry[model_type](checkpoint=sam_checkpoint).to(device)
         self.predictor = SamPredictor(sam_model)
         CONSOLE.print("SAM loaded!")
@@ -132,8 +134,25 @@ class SAM3D:
         return masks[0][..., None] #[H, W, 1]
     
     def init_mask_with_points(self, image, points):
-        # TODO
-        raise NotImplementedError
+
+        points = np.array(points)
+        labels = np.ones(len(points))
+
+        points_torch = torch.tensor(points).to(self.device)
+        labels_torch = torch.tensor(labels).to(self.device)
+
+        transformed_points = self.predictor.transform.apply_coords_torch(points_torch, image.shape[:2])
+
+        masks, scores, logits = self.predictor.predict_torch(
+            point_coords=transformed_points.unsqueeze(0),  # Add batch dimension
+            point_labels=labels_torch.unsqueeze(0),  # Add batch dimension
+            boxes=None,
+            multimask_output=False,
+        )
+
+        masks = masks[0].cpu().numpy()
+        return masks[0][..., None]  # [H, W, 1]
+
 
     @torch.no_grad()
     def prompting_coarse(self, seg_m, index_matrix):
@@ -167,17 +186,17 @@ class SAM3D:
         '''main function for self prompting'''
         h, w, _ = rendered_mask_score.shape
         tmp = rendered_mask_score.view(-1)
-        CONSOLE.print("\nRendered Mask Scores: Min: {:05f}, Max: {:05f}".format(tmp.min().item(), tmp.max().item()))
+        # CONSOLE.print("\nRendered Mask Scores: Min: {:05f}, Max: {:05f}".format(tmp.min().item(), tmp.max().item()))
         rand = torch.ones_like(tmp)
-        topk_v, topk_p = torch.topk(tmp*rand, k = 1)
+        topk_v, topk_p = torch.topk(tmp*rand, k = 100)
         topk_v, topk_p = topk_v.cpu().numpy(), topk_p.cpu().numpy()
 
-        if topk_v <= 0:
+        if topk_v.all() <= 0:
             CONSOLE.print("No prompt is available!")
             return np.zeros((0,2)), np.ones((0))
 
         prompt_points = []
-        prompt_points.append([topk_p[0] % w, topk_p[0] // w])
+        prompt_points.append([topk_p[99] % w, topk_p[99] // w])
         # CONSOLE.print(f'Highest score Coords: ({(topk_p[0] % w)}, {(topk_p[0] // w)})')
 
         tmp_mask = rendered_mask_score.detach().clone().cpu().numpy()
@@ -232,7 +251,7 @@ class SAM3D:
                 break
             prompt_points.append([int(tmp_points % w), int(tmp_points // w)])
         
-        CONSOLE.print(f"Have selected {len(prompt_points)}/{self.num_prompts} prompts")
+        # CONSOLE.print(f"Have selected {len(prompt_points)}/{self.num_prompts} prompts")
         prompt_points = np.array(prompt_points)
         input_label = np.ones(len(prompt_points))
 

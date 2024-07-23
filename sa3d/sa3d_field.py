@@ -46,7 +46,7 @@ class TCNNMaskFieldConfig(InstantiateConfig):
     '''maximum resolution of the hashmap for the base mlp'''
     log2_hashmap_size: int = 19
     '''size of the hashmap for the base mlp'''
-    use_pred_normals: bool = False
+    use_pred_normals: bool = True
     '''whether to use predicted normals'''
     mask_threshold: float = 1e-1
     '''threshold for the rendered mask score'''
@@ -119,7 +119,8 @@ class TCNNMaskField(Field):
         self._sample_locations = positions
         if not self._sample_locations.requires_grad:
             self._sample_locations.requires_grad = True
-        weights.requires_grad = positions.requires_grad = False
+        weights = weights.detach()
+        positions = positions.detach()
         positions_flat = positions.view(-1, 3)
         mask_weights = self.mask_grids(positions_flat).reshape(*weights.shape[:2], -1) #[num_rays, num_samples, num_levels]
         mask_weights = (mask_weights * self.level_alphas.view(1,1,-1).to(weights.device)).sum(-1, keepdim=True)

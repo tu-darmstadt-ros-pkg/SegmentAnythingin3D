@@ -15,11 +15,16 @@
 """
 Segment Anything in 3D configuration file.
 """
-
+import numpy as np
 from nerfstudio.cameras.camera_optimizers import CameraOptimizerConfig
 from nerfstudio.configs.base_config import ViewerConfig
 from nerfstudio.data.dataparsers.nerfstudio_dataparser import NerfstudioDataParserConfig
 from nerfstudio.plugins.types import MethodSpecification
+from nerfstudio.engine.schedulers import (
+    CosineDecaySchedulerConfig,
+    ExponentialDecaySchedulerConfig,
+    MultiStepSchedulerConfig,
+)
 
 from sa3d.sa3d_datamanager import SA3DDataManagerConfig
 from sa3d.sa3d import SA3DModelConfig
@@ -30,21 +35,19 @@ from nerfstudio.engine.optimizers import AdamOptimizerConfig, RAdamOptimizerConf
 from sa3d.self_prompting.sam3d import SAM3DConfig
 from sa3d.sa3d_field import TCNNMaskFieldConfig
 
+
 sa3d_method = MethodSpecification(
     config=SA3DTrainerConfig(
         method_name="sa3d",
-        max_num_iterations=15000,
+        max_num_iterations=350,
         save_only_latest_checkpoint=True,
         mixed_precision=False,
         pipeline=SA3DPipelineConfig(
-            text_prompt='the center object',
+            text_prompt='',
             datamanager=SA3DDataManagerConfig(
                 dataparser=NerfstudioDataParserConfig(),
-                train_num_rays_per_batch=4096,
-                eval_num_rays_per_batch=4096,
-                camera_optimizer=CameraOptimizerConfig(
-                    mode="off"
-                ),
+                train_num_rays_per_batch=2048,
+                eval_num_rays_per_batch=2048,
             ),
             model=SA3DModelConfig(
                 mask_fields=TCNNMaskFieldConfig(
@@ -56,6 +59,8 @@ sa3d_method = MethodSpecification(
                 ),
                 eval_num_rays_per_chunk=1 << 11,
                 remove_mask_floaters=True,
+                camera_optimizer=CameraOptimizerConfig(mode="SO3xR3"),
+                average_init_density=0.01,
                 # use_lpips=True,
             ),
             network=SAM3DConfig(

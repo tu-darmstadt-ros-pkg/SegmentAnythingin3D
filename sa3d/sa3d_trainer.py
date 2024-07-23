@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Type, Union
 import numpy as np
+import math
 import torch
 import imageio
 from rich.console import Console
@@ -111,15 +112,17 @@ class SA3DTrainer(Trainer):
             self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         # save the checkpoint
         ckpt_path = self.checkpoint_dir / f"step-{step:09d}.ckpt"
-        pipeline_state_dict = {k: v for k, v in self.pipeline.state_dict().items() if "sam." not in k}
+        # pipeline_state_dict = {k: v for k, v in self.pipeline.state_dict().items() if "sam." not in k}
         torch.save(
             {
                 "step": step,
                 "pipeline": self.pipeline.module.state_dict()  # type: ignore
                 if hasattr(self.pipeline, "module")
-                else pipeline_state_dict,
+                # else pipeline_state_dict,
+                else self.pipeline.state_dict(),
                 "optimizers": {k: v.state_dict() for (k, v) in self.optimizers.optimizers.items()},
                 "scalers": self.grad_scaler.state_dict(),
+                "prompt": self.pipeline.init_prompt
             },
             ckpt_path,
         )
@@ -138,13 +141,13 @@ class SA3DTrainer(Trainer):
         """
         optimizer_config = self.config.optimizers.copy()
         param_groups = self.pipeline.get_param_groups()
-        camera_optimizer_config = self.config.pipeline.datamanager.camera_optimizer
-        if camera_optimizer_config is not None and camera_optimizer_config.mode != "off":
-            assert camera_optimizer_config.param_group not in optimizer_config
-            optimizer_config[camera_optimizer_config.param_group] = {
-                "optimizer": camera_optimizer_config.optimizer,
-                "scheduler": camera_optimizer_config.scheduler,
-            }
+        # camera_optimizer_config = self.config.pipeline.datamanager.camera_optimizer
+        # if camera_optimizer_config is not None and camera_optimizer_config.mode != "off":
+        #     assert camera_optimizer_config.param_group not in optimizer_config
+        #     optimizer_config[camera_optimizer_config.param_group] = {
+        #         "optimizer": camera_optimizer_config.optimizer,
+        #         "scheduler": camera_optimizer_config.scheduler,
+        #     }
 
         self.mask_view_counts = torch.zeros_like(self.pipeline.model.mask_fields.mask_grids.params.data)
 
@@ -158,7 +161,8 @@ class SA3DTrainer(Trainer):
             step: Current training step.
         """
         # TODO: adjust loss according to view counts
-        self.optimizers.zero_grad_all()
+        # import pdb;pdb.set_trace()
+        self.optimizers.zero_grad_some(["mask_fields"])
         cpu_or_cuda_str: str = self.device.split(":")[0]
 
         with torch.autocast(device_type=cpu_or_cuda_str, enabled=self.mixed_precision):
@@ -173,7 +177,7 @@ class SA3DTrainer(Trainer):
             self.pipeline.model.mask_fields.mask_grids.params.data *= self.mask_view_counts
             prev_mask_grids = self.pipeline.model.mask_fields.mask_grids.params.data.detach().clone()
 
-        self.optimizers.optimizer_scaler_step_all(self.grad_scaler)
+        self.optimizers.optimizer_scaler_step_some(self.grad_scaler,["mask_fields"])
         with torch.no_grad():
             self.mask_view_counts += (self.pipeline.model.mask_fields.mask_grids.params.data != prev_mask_grids)
             self.pipeline.model.mask_fields.mask_grids.params.data /= (self.mask_view_counts + 1e-8)
@@ -189,8 +193,13 @@ class SA3DTrainer(Trainer):
 
             metrics_dict["Gradients/Total"] = total_grad
 
+
+        scale = self.grad_scaler.get_scale()
         self.grad_scaler.update()
-        self.optimizers.scheduler_step_all(step)
+        # If the gradient scaler is decreased, no optimization step is performed so we should not step the scheduler.
+        if scale <= self.grad_scaler.get_scale():
+            self.optimizers.scheduler_step_all(step)
+        # self.optimizers.scheduler_step_all(step)
         # Merging loss and metrics dict into a single output.
         return loss, loss_dict, metrics_dict
     
@@ -207,8 +216,8 @@ class SA3DTrainer(Trainer):
             # num_iterations = self.config.max_num_iterations
             num_iterations = self.pipeline.datamanager.len_image_batch
             self._start_step = step = 0
-            for step in range(self._start_step, self._start_step + num_iterations):
-                while not self.is_training:
+            for step in range(self._start_step, self._start_step + num_iterations):#, int((num_iterations / 20))):
+                while not self.training_state:
                     time.sleep(0.01)
                 with self.train_lock:
                     with TimeWriter(writer, EventName.ITER_TRAIN_TIME, step=step) as train_t:

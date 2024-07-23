@@ -60,13 +60,9 @@ class SA3DDataManager(VanillaDataManager):
             collate_fn=self.config.collate_fn,
         )
         self.iter_train_image_dataloader = iter(self.train_image_dataloader)
-        # self.train_pixel_sampler = self._get_pixel_sampler(self.train_dataset, self.config.train_num_rays_per_batch)
-        self.train_camera_optimizer = self.config.camera_optimizer.setup(
-            num_cameras=self.train_dataset.cameras.size, device=self.device
-        )
+        self.train_pixel_sampler = self._get_pixel_sampler(self.train_dataset, self.config.train_num_rays_per_batch)
         self.train_ray_generator = RayGenerator(
-            self.train_dataset.cameras.to(self.device),
-            self.train_camera_optimizer,
+            self.train_dataset.cameras.to(self.device)
         )
 
         # pre-fetch the image batch (how images are replaced in dataset)
@@ -77,10 +73,8 @@ class SA3DDataManager(VanillaDataManager):
         """Returns the next batch of data from the train dataloader."""
         self.train_count += 1
         current_index = torch.tensor([step % self.len_image_batch])
-        # get current camera, include camera transforms from original optimizer
-        camera_transforms = self.train_camera_optimizer(current_index)
         current_camera = self.train_dataparser_outputs.cameras[current_index].to(self.device)
-        current_ray_bundle = current_camera.generate_rays(torch.tensor(list(range(1))).unsqueeze(-1), camera_opt_to_camera=camera_transforms)
+        current_ray_bundle = current_camera.generate_rays(camera_indices=0, keep_shape=True)
         batch = {"image": self.image_batch["image"][current_index]} # [H, W, C]
-        
+
         return current_ray_bundle, batch

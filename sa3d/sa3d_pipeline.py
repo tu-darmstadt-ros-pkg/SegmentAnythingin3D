@@ -18,6 +18,9 @@ from dataclasses import dataclass, field
 from itertools import cycle
 from typing import Any, Dict, List, Mapping, Optional, Type, Union, cast
 import torch
+import numpy as np
+import matplotlib.pyplot as plt
+
 from torch.cuda.amp.grad_scaler import GradScaler
 from typing_extensions import Literal
 from nerfstudio.pipelines.base_pipeline import VanillaPipeline, VanillaPipelineConfig
@@ -28,20 +31,21 @@ from sa3d.sa3d_datamanager import SA3DDataManagerConfig
 from sa3d.sa3d import SA3DModelConfig
 from sa3d.self_prompting.sam3d import SAM3DConfig, SAM3D
 
-
 @dataclass
 class SA3DPipelineConfig(VanillaPipelineConfig):
     """Configuration for pipeline instantiation"""
     _target: Type = field(default_factory=lambda: SA3DPipeline)
     """target class to instantiate"""
     datamanager: SA3DDataManagerConfig = SA3DDataManagerConfig()
+    # datamanager: SA3DDataManagerConfig = SA3DDataManagerConfig()
     """specifies the datamanager config"""
     model: SA3DModelConfig = SA3DModelConfig()
     """specifies the model config"""
     network: SAM3DConfig = SAM3DConfig()
     """specifies the segmentation model SAM3D config"""
-    text_prompt: str = "the center object"
+    text_prompt: str = ""
     """text prompt"""
+
     
 
 class SA3DPipeline(VanillaPipeline):
@@ -59,7 +63,7 @@ class SA3DPipeline(VanillaPipeline):
         grad_scaler: Optional[GradScaler] = None,
     ):
         super().__init__(config, device, test_mode, world_size, local_rank)
-
+        self.init_prompt = None
         self.sam: SAM3D = config.network.setup(device=device)
         # viewer elements
         self.text_prompt_box = ViewerText(name="Text Prompt", default_value=self.config.text_prompt, cb_hook=self.text_prompt_callback)
@@ -77,8 +81,16 @@ class SA3DPipeline(VanillaPipeline):
 
         ray_bundle, batch = self.datamanager.next_train(step)
         model_outputs = self.model.get_outputs_for_camera_ray_bundle(ray_bundle)
-        init_prompt = None if step != 0 else self.config.text_prompt # TODO: add point prompt
-        sam_outputs, loss_dict, metrics_dict = self.sam.get_outputs(model_outputs, init_prompt=init_prompt)
+        if step != 0:
+            prompt = None
+        else:
+            if self.config.text_prompt:
+                prompt = self.config.text_prompt
+            else:
+                prompt = self.img2prompt(model_outputs['rgb'].cpu().numpy())
+            self.init_prompt = prompt
+
+        sam_outputs, loss_dict, metrics_dict = self.sam.get_outputs(model_outputs, init_prompt=prompt)
         model_outputs.update(sam_outputs)
         return model_outputs, loss_dict, metrics_dict
     
@@ -98,3 +110,27 @@ class SA3DPipeline(VanillaPipeline):
     def forward(self):
         """Not implemented since we only want the parameter saving of the nn module, but not forward()"""
         raise NotImplementedError
+    
+    def img2prompt(self, image: np.ndarray):
+        """
+        Display an image and let the user select points on it.
+        Parameters:
+        image (np.ndarray): An H x W x 3 array representing the image.
+        Returns:
+        np.ndarray: An n x 2 array representing the coordinates of the selected points.
+        """
+        if image.ndim != 3 or image.shape[2] != 3:
+            raise ValueError("Input image must be an H x W x 3 array.")
+
+        plt.imshow(image)
+        plt.title("Click on the image to select points, then press Enter")
+
+        # Let user select points
+        points = plt.ginput(n=-1, timeout=0)  # n=-1 means unlimited number of points, timeout=0 means wait indefinitely
+
+        plt.close()
+
+        # Convert list of tuples to np.ndarray
+        points_array = np.array(points)
+
+        return points_array
