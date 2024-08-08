@@ -73,7 +73,9 @@ class SA3DDataManager(VanillaDataManager):
         """Returns the next batch of data from the train dataloader."""
         self.train_count += 1
         current_index = torch.tensor([step % self.len_image_batch])
-        current_camera = self.train_dataparser_outputs.cameras[current_index].to(self.device)
+
+        current_camera = self.train_dataset.cameras[current_index].to(self.device)
+        # current_camera = self.train_dataparser_outputs.cameras[current_index].to(self.device)
         current_ray_bundle = current_camera.generate_rays(camera_indices=0, keep_shape=True)
         batch = {"image": self.image_batch["image"][current_index]} # [H, W, C]
 

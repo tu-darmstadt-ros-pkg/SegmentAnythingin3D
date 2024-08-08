@@ -215,7 +215,7 @@ class SA3DTrainer(Trainer):
         with TimeWriter(writer, EventName.TOTAL_TRAIN_TIME):
             # num_iterations = self.config.max_num_iterations
             num_iterations = self.pipeline.datamanager.len_image_batch
-            self._start_step = step = 0
+            self._start_step = step = 5
             for step in range(self._start_step, self._start_step + num_iterations):#, int((num_iterations / 20))):
                 while not self.training_state:
                     time.sleep(0.01)

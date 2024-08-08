@@ -81,7 +81,7 @@ class SA3DPipeline(VanillaPipeline):
 
         ray_bundle, batch = self.datamanager.next_train(step)
         model_outputs = self.model.get_outputs_for_camera_ray_bundle(ray_bundle)
-        if step != 0:
+        if step != 5:
             prompt = None
         else:
             if self.config.text_prompt:
