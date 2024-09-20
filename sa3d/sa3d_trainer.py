@@ -167,7 +167,7 @@ class SA3DTrainer(Trainer):
 
         with torch.autocast(device_type=cpu_or_cuda_str, enabled=self.mixed_precision):
             pipe_outputs, loss_dict, metrics_dict = self.pipeline.get_train_loss_dict(step=step)
-            self.update_visualzation(pipe_outputs)
+            # self.update_visualzation(pipe_outputs)
             if loss_dict['mask'] is None:
                 return 0., loss_dict, metrics_dict
             loss = functools.reduce(torch.add, loss_dict.values())
@@ -216,7 +216,7 @@ class SA3DTrainer(Trainer):
             # num_iterations = self.config.max_num_iterations
             num_iterations = self.pipeline.datamanager.len_image_batch
             self._start_step = step = 5
-            for step in range(self._start_step, self._start_step + num_iterations):#, int((num_iterations / 20))):
+            for step in range(self._start_step, self._start_step + num_iterations, int((num_iterations / 20))):
                 while not self.training_state:
                     time.sleep(0.01)
                 with self.train_lock:
@@ -274,7 +274,7 @@ class SA3DTrainer(Trainer):
 
         # save checkpoint at the end of training
         self.save_checkpoint(step)
-        self.save_visualzation()
+        # self.save_visualzation()
 
         # write out any remaining events (e.g., total train time)
         writer.write_out_storage()

@@ -50,6 +50,7 @@ sa3d_method = MethodSpecification(
                 eval_num_rays_per_batch=2048,
             ),
             model=SA3DModelConfig(
+                # Perhaps we dont need that resolution 128 2048 16
                 mask_fields=TCNNMaskFieldConfig(
                     base_res=128,
                     num_levels=16,
@@ -64,7 +65,7 @@ sa3d_method = MethodSpecification(
                 # use_lpips=True,
             ),
             network=SAM3DConfig(
-                num_prompts=10,
+                num_prompts=5,
                 neg_lamda=1.0
             )
         ),

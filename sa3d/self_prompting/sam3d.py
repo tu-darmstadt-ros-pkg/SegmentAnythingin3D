@@ -1,5 +1,6 @@
 import json
 import os
+# os.environ["TORCH_CUDNN_SDPA_ENABLED"] = "1"
 import time
 from abc import ABC
 from typing import Optional
@@ -9,16 +10,18 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch import Tensor
-
 from rich.console import Console
 CONSOLE = Console(width=120)
 
 from dataclasses import dataclass, field
 from typing import Type
 from nerfstudio.configs import base_config as cfg
-from mobile_sam import (sam_model_registry, SamAutomaticMaskGenerator, SamPredictor)
+# from mobile_sam import (sam_model_registry, SamAutomaticMaskGenerator, SamPredictor)
 # from segment_anything import (SamAutomaticMaskGenerator, SamPredictor,
 #                               sam_model_registry)
+from sam2.build_sam import build_sam2
+from sam2.sam2_image_predictor import SAM2ImagePredictor
+
 from .utils import cal_IoU, to8b, to_tensor
 from .grounding_dino import GroundingDino
 
@@ -45,11 +48,15 @@ class SAM3D:
         self.neg_lamda = config.neg_lamda
         self.iou_thresh = config.iou_thresh
         # sam_checkpoint = "sa3d/self_prompting/dependencies/sam_ckpt/sam_vit_h_4b8939.pth"
-        sam_checkpoint = "sa3d/self_prompting/dependencies/sam_ckpt/mobile_sam.pt"
+        # sam_checkpoint = "sa3d/self_prompting/dependencies/sam_ckpt/mobile_sam.pt"
         # model_type = "vit_h"
-        model_type = "vit_t"
-        sam_model = sam_model_registry[model_type](checkpoint=sam_checkpoint).to(device)
-        self.predictor = SamPredictor(sam_model)
+        # model_type = "vit_t"
+        # sam_model = sam_model_registry[model_type](checkpoint=sam_checkpoint).to(device)
+        # self.predictor = SamPredictor(sam_model)
+
+        checkpoint = "sa3d/self_prompting/dependencies/sam_ckpt/segment-anything-2/checkpoints/sam2_hiera_base_plus.pt"
+        model_cfg = "sam2_hiera_b+.yaml"
+        self.predictor = SAM2ImagePredictor(build_sam2(model_cfg, checkpoint, device=device))
         CONSOLE.print("SAM loaded!")
 
     @torch.no_grad()
@@ -58,9 +65,9 @@ class SAM3D:
         if outputs['sam_mask'] is not None:
             metrics_dict['iou'] = cal_IoU(to_tensor(outputs['sam_mask'], self.device), \
                                           batch['mask_scores'].detach().clone()>0).item()
-            CONSOLE.print("Current IoU is: {:07f}".format(metrics_dict['iou']))
-            if metrics_dict['iou'] <= self.iou_thresh:
-                CONSOLE.print("Lower than IoU threshold, Unacceptable!")
+            # CONSOLE.print("Current IoU is: {:07f}".format(metrics_dict['iou']))
+            # if metrics_dict['iou'] <= self.iou_thresh:
+            #     CONSOLE.print("Lower than IoU threshold, Unacceptable!")
         else:
             metrics_dict['iou'] = None
             CONSOLE.print("No Mask from SAM!")
@@ -70,6 +77,15 @@ class SAM3D:
         loss_dict = {'mask': None}
         if metrics_dict['iou'] is not None:
             if metrics_dict['iou'] > self.iou_thresh:
+                # # new Dice loss:
+                # sam_mask = to_tensor(outputs['sam_mask'], self.device)
+                # mask_scores = batch['mask_scores']
+                # epsilon = 1e-6
+                # intersection = (sam_mask * mask_scores).sum()
+                # union = sam_mask.sum() + mask_scores.sum()
+                # mask_loss = 1 - (2 * intersection + epsilon) / (union + epsilon)
+                # loss_dict['mask'] = mask_loss
+
                 mask_loss = -(to_tensor(outputs['sam_mask'], self.device) * batch['mask_scores']).sum()
                 out_mask_loss = neg_lamda * ((1 - to_tensor(outputs['sam_mask'], self.device)) * batch['mask_scores']).sum()
                 loss_dict['mask'] = mask_loss + out_mask_loss
@@ -101,9 +117,12 @@ class SAM3D:
                 'sam_mask': self.init_mask(image, init_prompt),
                 'prompt_points': None
             }
+            # import matplotlib.pyplot as plt
+            # plt.imshow(outputs['sam_mask'])
+            # plt.show()
             loss_dict = self.get_loss_dict(outputs, batch, metrics_dict, neg_lamda=self.neg_lamda)
         
-        outputs.update({"sam_mask_show": SAM3D.visualize_prompts(outputs, [H, W])})
+        # outputs.update({"sam_mask_show": SAM3D.visualize_prompts(outputs, [H, W])})  
         # for k in outputs.keys():
         #     outputs[k] = to_tensor(outputs[k])
         return outputs, loss_dict, metrics_dict
@@ -117,40 +136,47 @@ class SAM3D:
             return self.init_mask_with_points(image, prompt)
         else:
             raise NotImplementedError
-    
+        
+    @torch.no_grad()
     def init_mask_with_text(self, image, text):
         text2box = GroundingDino()
         input_boxes = text2box(image, text)
         boxes = torch.tensor(input_boxes)[0:1].to(self.device)
-        transformed_boxes = self.predictor.transform.apply_boxes_torch(boxes, image.shape[:2])
-        masks, scores, logits = self.predictor.predict_torch(
-            point_coords=None,
-            point_labels=None,
-            boxes=transformed_boxes,
-            # multimask_output=True,
-            multimask_output=False,
-        )
-        masks = masks[0].cpu().numpy()
+        #SAM and MobileSAM only
+        # transformed_boxes = self.predictor.transform.apply_boxes_torch(boxes, image.shape[:2])
+        # masks, scores, logits = self.predictor.predict_torch(
+        #     point_coords=None,
+        #     point_labels=None,
+        #     boxes=transformed_boxes,
+        #     # multimask_output=True,
+        #     multimask_output=False,
+        # )
+        # SAM2
+        masks, _, _ = self.predictor.predict(box=boxes)
         return masks[0][..., None] #[H, W, 1]
     
+    @torch.no_grad()
     def init_mask_with_points(self, image, points):
 
         points = np.array(points)
         labels = np.ones(len(points))
 
-        points_torch = torch.tensor(points).to(self.device)
-        labels_torch = torch.tensor(labels).to(self.device)
 
-        transformed_points = self.predictor.transform.apply_coords_torch(points_torch, image.shape[:2])
+        # points_torch = torch.tensor(points).to(self.device)
+        # labels_torch = torch.tensor(labels).to(self.device)
+        #sam and mobilesam only
+        # transformed_points = self.predictor.transform.apply_coords_torch(points_torch, image.shape[:2])
+        # masks, scores, logits = self.predictor.predict_torch(
+        #     point_coords=transformed_points.unsqueeze(0),  # Add batch dimension
+        #     point_labels=labels_torch.unsqueeze(0),  # Add batch dimension
+        #     boxes=None,
+        #     multimask_output=False,
+        # )
 
-        masks, scores, logits = self.predictor.predict_torch(
-            point_coords=transformed_points.unsqueeze(0),  # Add batch dimension
-            point_labels=labels_torch.unsqueeze(0),  # Add batch dimension
-            boxes=None,
-            multimask_output=False,
-        )
+        # SAM2
+        masks, _, _ = self.predictor.predict(point_coords=points,point_labels=labels)
 
-        masks = masks[0].cpu().numpy()
+        # SAM2 output is np.ndarray
         return masks[0][..., None]  # [H, W, 1]
 
 
@@ -165,12 +191,15 @@ class SAM3D:
 
         prompt_points, input_label = self.mask_to_prompt(rendered_mask_score = seg_m_for_prompt, 
                                                     index_matrix = index_matrix, num_prompts = self.num_prompts)
+        
+
         if len(prompt_points) != 0:
             masks, scores, logits = self.predictor.predict(
                 point_coords=prompt_points,
                 point_labels=input_label,
                 multimask_output=False,
             )
+           
             sam_mask = masks[0][..., None] #[H, W, 1]
         else:
             sam_mask = None
@@ -200,7 +229,10 @@ class SAM3D:
         # CONSOLE.print(f'Highest score Coords: ({(topk_p[0] % w)}, {(topk_p[0] // w)})')
 
         tmp_mask = rendered_mask_score.detach().clone().cpu().numpy()
-        area = to8b(tmp_mask).sum() / 255
+        # import matplotlib.pyplot as plt
+        # plt.imshow(tmp_mask)
+        # plt.show()
+        area = to8b(tmp_mask).sum() / 255 
         r = np.sqrt(area / math.pi)
         masked_r = max(int(r) // 2, 2)
         # masked_r = max(int(r) // 3, 2)
@@ -214,6 +246,8 @@ class SAM3D:
                 point_labels=input_label,
                 multimask_output=False,
             )
+            # plt.imshow(previous_masks[0])
+            # plt.show()
 
             l = 0 if prompt_points[-1][0]-masked_r <= 0 else prompt_points[-1][0]-masked_r
             r = w-1 if prompt_points[-1][0]+masked_r >= w-1 else prompt_points[-1][0]+masked_r
